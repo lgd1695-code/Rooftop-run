@@ -753,6 +753,263 @@ kbd {
       coinLine(pick([-1, 0, 1]), d, 5 + ((Math.random() * 3) | 0), 105, 55);
       return;
     }
+    const safe = clamp(state.safe + pick([-1, Magnet</span>
+          <span><i class="lg lg-x2"></i>Skor x2</span>
+          <span><i class="lg lg-shield"></i>Perisai</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- PAUSE -->
+    <section id="screen-pause" class="screen">
+      <div class="card small">
+        <h2>Jeda</h2>
+        <button id="btn-resume" class="btn primary">▶ Lanjut</button>
+        <button id="btn-restart" class="btn ghost">↻ Ulang</button>
+        <button id="btn-menu" class="btn ghost">☰ Menu</button>
+      </div>
+    </section>
+
+    <!-- GAME OVER -->
+    <section id="screen-over" class="screen">
+      <div class="card small">
+        <h2 class="over-title">Tertabrak!</h2>
+        <div id="newbest" class="newbest hidden">★ REKOR BARU ★</div>
+        <div class="stats">
+          <div><span>Skor</span><b id="final-score">0</b></div>
+          <div><span>Rekor</span><b id="final-best">0</b></div>
+          <div><span>Koin</span><b id="final-coins">0</b></div>
+          <div><span>Jarak</span><b id="final-dist">0 m</b></div>
+        </div>
+        <button id="btn-again" class="btn primary">↻ MAIN LAGI</button>
+        <button id="btn-home" class="btn ghost">☰ Menu</button>
+      </div>
+    </section>
+
+    <noscript><div class="noscript">Game ini membutuhkan JavaScript.</div></noscript>
+  </div>
+  <script>
+/* =========================================================
+   NEON ROOFTOP RUN — endless runner 3 jalur
+   Murni HTML + CSS + JavaScript (tanpa library, tanpa aset luar).
+   Semua grafis digambar lewat Canvas, semua suara dibuat lewat WebAudio.
+   ========================================================= */
+(() => {
+  'use strict';
+
+  /* ---------- Konfigurasi ---------- */
+  const LANE_W = 160;          // lebar jalur (unit dunia)
+  const FOCAL = 420;           // kekuatan perspektif
+  const SPAWN_D = 3400;        // jarak kemunculan objek
+  const BASE_SPEED = 1100;
+  const MAX_SPEED = 2700;
+  const GRAVITY = 2800;
+  const JUMP_V = 900;
+  const SLIDE_TIME = 0.65;
+  const PLAYER_H = 160;
+  const ROAD_HALF = 250;
+  const DEPTH = { barrier: 30, beam: 30, wall: 160, coin: 10, power: 20 };
+
+  /* ---------- Util ---------- */
+  const $ = (id) => document.getElementById(id);
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const safeGet = (key, def) => { try { const v = localStorage.getItem(key); return v === null ? def : v; } catch (e) { return def; } };
+  const safeSet = (key, val) => { try { localStorage.setItem(key, String(val)); } catch (e) { /* abaikan */ } };
+
+  const canvas = $('game');
+  const ctx = canvas.getContext('2d');
+
+  /* ---------- Layout (dihitung ulang saat resize) ---------- */
+  let W = 0, H = 0, DPR = 1, k = 1, cx = 0, horizon = 0, bottom = 0;
+  let skyGrad, groundGrad, roadGrad;
+  let camX = 0;
+
+  const stars = Array.from({ length: 70 }, () => ({ x: Math.random(), y: Math.random() * 0.85, r: Math.random() * 1.4 + 0.4, p: Math.random() * 6 }));
+  const skyline = [];
+  for (let layer = 0; layer < 2; layer++) {
+    let x = 0;
+    while (x < 1.4) {
+      const w = rand(0.03, 0.075);
+      skyline.push({ x, w, h: rand(0.03, 0.15) * (layer ? 0.75 : 1.15), layer });
+      x += w + rand(0, 0.012);
+    }
+  }
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    horizon = H * 0.36;
+    bottom = H * 0.86;
+    const lanePx = Math.min(W * 0.30, H * 0.21, 190);
+    k = lanePx / LANE_W;
+    cx = W / 2;
+
+    skyGrad = ctx.createLinearGradient(0, 0, 0, horizon);
+    skyGrad.addColorStop(0, '#0a0524');
+    skyGrad.addColorStop(0.55, '#2a0f55');
+    skyGrad.addColorStop(1, '#b3307f');
+
+    groundGrad = ctx.createLinearGradient(0, horizon, 0, H);
+    groundGrad.addColorStop(0, '#1a0d3d');
+    groundGrad.addColorStop(1, '#07041a');
+
+    roadGrad = ctx.createLinearGradient(0, horizon, 0, H);
+    roadGrad.addColorStop(0, '#3a2468');
+    roadGrad.addColorStop(0.5, '#201444');
+    roadGrad.addColorStop(1, '#150d33');
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  /* ---------- Proyeksi ---------- */
+  const sc = (d) => FOCAL / (FOCAL + d);
+  const gy = (s) => horizon + (bottom - horizon) * s;
+  const px = (wx, s) => cx + (wx - camX) * k * s;
+
+  /* ---------- Audio (WebAudio, tanpa file) ---------- */
+  const Sfx = (() => {
+    let ac = null, master = null, noiseBuf = null, timer = null, step = 0;
+    let muted = safeGet('nrr_muted', '0') === '1';
+    const chords = [
+      [220, 261.6, 329.6, 440],
+      [174.6, 220, 261.6, 349.2],
+      [261.6, 329.6, 392, 523.3],
+      [196, 246.9, 293.7, 392]
+    ];
+    const arp = [0, 1, 2, 3, 2, 1, 2, 3, 0, 1, 2, 3, 3, 2, 1, 2];
+
+    function init() {
+      if (!ac) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        ac = new AC();
+        master = ac.createGain();
+        master.gain.value = muted ? 0 : 0.6;
+        master.connect(ac.destination);
+        noiseBuf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
+        const d = noiseBuf.getChannelData(0);
+        for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      }
+      if (ac.state === 'suspended') ac.resume();
+    }
+    function tone(f, dur, type, vol, f2, delay) {
+      if (!ac || muted) return;
+      const t = ac.currentTime + (delay || 0);
+      const o = ac.createOscillator();
+      const g = ac.createGain();
+      o.type = type || 'square';
+      o.frequency.setValueAtTime(f, t);
+      if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + dur);
+      g.gain.setValueAtTime(vol, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g); g.connect(master);
+      o.start(t); o.stop(t + dur + 0.03);
+    }
+    function noise(dur, vol, freq) {
+      if (!ac || muted) return;
+      const t = ac.currentTime;
+      const src = ac.createBufferSource();
+      src.buffer = noiseBuf;
+      const f = ac.createBiquadFilter();
+      f.type = 'bandpass'; f.frequency.value = freq || 1500;
+      const g = ac.createGain();
+      g.gain.setValueAtTime(vol, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      src.connect(f); f.connect(g); g.connect(master);
+      src.start(t); src.stop(t + dur + 0.03);
+    }
+    function musicTick() {
+      const i = step % 16;
+      const chord = chords[(step >> 4) % 4];
+      tone(chord[0] / 4, 0.14, 'triangle', 0.22);
+      tone(chord[arp[i]], 0.1, 'square', 0.035);
+      if (i % 4 === 0) tone(150, 0.14, 'sine', 0.35, 40);
+      if (i % 2 === 1) noise(0.04, 0.05, 6000);
+      step++;
+    }
+    return {
+      init,
+      get muted() { return muted; },
+      setMuted(m) {
+        muted = m; safeSet('nrr_muted', m ? '1' : '0');
+        if (master) master.gain.value = m ? 0 : 0.6;
+      },
+      music(on) {
+        if (on && !timer) { step = 0; timer = setInterval(musicTick, 135); }
+        if (!on && timer) { clearInterval(timer); timer = null; }
+      },
+      coin() { tone(988, 0.08, 'square', 0.1); tone(1319, 0.14, 'square', 0.1, 0, 0.06); },
+      jump() { tone(280, 0.2, 'square', 0.09, 760); },
+      slide() { noise(0.28, 0.12, 900); tone(420, 0.2, 'sawtooth', 0.04, 130); },
+      swish() { noise(0.09, 0.07, 2600); },
+      power() { [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.12, 'square', 0.09, 0, i * 0.06)); },
+      shieldBreak() { noise(0.3, 0.2, 2000); tone(900, 0.25, 'triangle', 0.15, 200); },
+      hit() { noise(0.55, 0.35, 500); tone(170, 0.55, 'sawtooth', 0.22, 38); }
+    };
+  })();
+
+  /* ---------- State ---------- */
+  const state = {
+    time: 0, distance: 0, speed: 0, score: 0, coins: 0,
+    best: parseInt(safeGet('nrr_best', '0'), 10) || 0,
+    totalCoins: parseInt(safeGet('nrr_coins', '0'), 10) || 0,
+    magnet: 0, x2: 0, shield: false, inv: 0,
+    shake: 0, flash: 0, rowAcc: 0, rowGap: 900, safe: 0
+  };
+  const player = { lane: 0, x: 0, y: 0, vy: 0, slide: 0, slideQueued: false, ph: 0, tilt: 0 };
+  let mode = 'menu';           // menu | play | paused | dying | over
+  let deathT = 0;
+  let clock = 0;
+  const objs = [];
+  const blds = [];
+  const parts = [];
+
+  /* ---------- Gedung samping ---------- */
+  function newBuilding(side, d) {
+    const hue = pick([190, 280, 320, 210, 160, 260]);
+    const b = {
+      side, d, hue,
+      off: rand(330, 520), w: rand(160, 300), h: rand(220, 720), depth: rand(220, 380),
+      cF: `hsl(${hue},45%,17%)`, cT: `hsl(${hue},50%,30%)`, cS: `hsl(${hue},45%,11%)`, cE: `hsl(${hue},100%,62%)`,
+      cols: 3, rows: 0, wins: []
+    };
+    b.rows = Math.max(2, Math.floor(b.h / 60));
+    for (let i = 0; i < b.cols * b.rows; i++) b.wins.push(Math.random() < 0.45 ? (Math.random() < 0.7 ? 1 : 2) : 0);
+    return b;
+  }
+  function initBuildings() {
+    blds.length = 0;
+    for (const side of [-1, 1]) {
+      let d = -300 + rand(0, 200);
+      while (d < SPAWN_D + 600) {
+        const b = newBuilding(side, d);
+        blds.push(b);
+        d += b.depth + rand(40, 140);
+      }
+    }
+  }
+
+  /* ---------- Objek jalur ---------- */
+  function addObj(t, lane, d, extra) {
+    objs.push(Object.assign({ t, lane, px: lane * LANE_W, d, dead: false, depth: DEPTH[t] || DEPTH.power, h: 0, hue: 0 }, extra));
+  }
+  function coinLine(lane, d, n, gap, h) { for (let i = 0; i < n; i++) addObj('coin', lane, d + i * (gap || 105), { h: h || 55, depth: DEPTH.coin }); }
+  function coinArc(lane, d) { [55, 100, 135, 100, 55].forEach((h, i) => addObj('coin', lane, d - 190 + i * 95, { h, depth: DEPTH.coin })); }
+
+  function nextGap() { return Math.max(800, state.speed * 0.5) + rand(0, 420); }
+
+  function spawnRow(d) {
+    const diff = clamp(state.time / 100, 0, 1);
+    if (Math.random() < 0.2) {
+      coinLine(pick([-1, 0, 1]), d, 5 + ((Math.random() * 3) | 0), 105, 55);
+      return;
+    }
     const safe = clamp(state.safe + pick([-1, 0, 0, 1]), -1, 1);
     state.safe = safe;
     for (const lane of [-1, 0, 1]) {
